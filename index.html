@@ -203,6 +203,9 @@
   .shift-act .btn { min-width: 116px; }
   .btn.picked { background: var(--on-bg); border-color: var(--on-bg); color: var(--on-ink); }
   .shift.is-picked { background: var(--filled); box-shadow: inset 4px 0 0 var(--rule); }
+  .crew { max-width: 136px; font-size: var(--text-sm); line-height: 1.3; color: var(--ink); text-align: right; }
+  .crew small { display: block; color: var(--muted); font-size: 12.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+  .crew b { font-weight: 600; }
   .state { display: inline-block; font-size: var(--text-sm); font-weight: 600; color: var(--muted); padding: 4px 0; white-space: nowrap; }
   .state.mine { color: var(--ok); }
   .state.mine::before { content: "\2713  "; }
@@ -487,11 +490,19 @@
     }
   }
 
+  // "Jane S. (11th)" for each student on a shift; '' when the script doesn't send names.
+  function crewHtml(sh, sep) {
+    if (!sh.crew || !sh.crew.length) return '';
+    return sh.crew.map((c) => '<b>' + esc(c.name) + '</b>' + (c.grade ? ' (' + esc(gradeText(c.grade)) + ')' : '')).join(sep || ', ');
+  }
+
   function shiftState(sh) {
     if (sh.mine) return { cls: 'mine', html: '<span class="state mine">You&rsquo;re On</span>' };
     if (sh.status === 'Cancelled') return { cls: 'gone', html: '<span class="state">Game Cancelled</span>' };
     if (sh.started) return { cls: 'gone', html: '<span class="state">Started</span>' };
-    if (sh.taken >= sh.spots) return { cls: 'full', html: '<span class="state">Taken</span>' };
+    if (sh.taken >= sh.spots) {
+      return { cls: 'full', html: crewHtml(sh) ? '<div class="crew"><small>Taken by</small>' + crewHtml(sh, '<br>') + '</div>' : '<span class="state">Taken</span>' };
+    }
     const left = sh.spots - sh.taken;
     const on = picks.indexOf(sh.id) >= 0;
     return { cls: 'open', html: '<button type="button" class="btn' + (on ? ' picked' : '') + '" aria-pressed="' + on + '" data-pick="' + esc(sh.id) + '">' +
@@ -542,7 +553,9 @@
       const timeNote = s.notes && /time/i.test(s.notes) ? '<div class="note">' + esc(s.notes) + '</div>' : '';
       html += '<div class="shift ' + (st.cls === 'gone' ? 'gone' : '') + (s.mine ? ' is-mine' : '') + (picks.indexOf(s.id) >= 0 ? ' is-picked' : '') + '"><div class="shift-info">' +
         '<div class="shift-name">' + esc(s.shift) + (s.arrive ? ' <small>&middot; arrive by ' + esc(s.arrive) + '</small>' : '') + '</div>' +
-        gamesHtml(s.games) + timeNote + '</div><div class="shift-act">' + st.html + '</div></div>';
+        gamesHtml(s.games) + timeNote +
+        (s.spots > 1 && crewHtml(s) && st.cls !== 'full' ? '<div class="note">Signed up: ' + crewHtml(s) + '</div>' : '') +
+        '</div><div class="shift-act">' + st.html + '</div></div>';
       if (i === shifts.length - 1) html += '</section>';
     });
     $('list').innerHTML = html;

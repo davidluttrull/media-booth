@@ -125,6 +125,8 @@ function load_(body) {
         id: sh.id, date: sh.date, opponent: sh.opponent, shift: sh.shift, games: sh.games, start: sh.start,
         arrive: arriveTime_(sh, s), spots: sh.spots, taken: on.length, status: sh.status, notes: sh.notes,
         started: started_(sh), mine: mine ? mine.id : '',
+        // Who's on it, so students can ask about swapping. Short names only: the page is public.
+        crew: on.map(function (u) { return { name: shortName_(u.name), grade: u.grade }; }),
       };
     });
   list.sort(shiftOrder_);
@@ -558,6 +560,14 @@ function prettyDate_(key) {
 function normEmail_(v) { return String(v || '').trim().toLowerCase(); }
 
 function cleanName_(v) { return String(v || '').replace(/\s+/g, ' ').trim().slice(0, 60); }
+
+/** "Jane Smith" as "Jane S." for the public page. */
+function shortName_(v) {
+  const parts = cleanName_(v).split(' ');
+  const first = (parts[0] || '').charAt(0).toUpperCase() + (parts[0] || '').slice(1);
+  if (parts.length < 2) return first;
+  return first + ' ' + parts[parts.length - 1].charAt(0).toUpperCase() + '.';
+}
 
 function emailAllowed_(email, s) {
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return false;
