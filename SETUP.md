@@ -60,6 +60,18 @@ After any later change to `Code.gs`: **Deploy > Manage deployments > pencil > Ve
 3. Use the email's **cancel my shift** link to take yourself off.
 4. Clear **Test mode** on Settings. Share the page link with students.
 
+## Coordinator portal
+
+The portal is at <https://davidluttrull.github.io/media-booth/admin/>. Most of what's below can be done there instead of in the Sheet.
+
+- **Sign in** with the coordinator code. Get it from the Sheet's **Media Booth > Show Coordinator Code** menu (reload the Sheet once after pasting a new Code.gs so the menu item shows up). The phone or computer remembers the code until you tap **Sign Out**. Eight wrong codes in 15 minutes lock the portal for 15 minutes.
+- **Change the code**: in Apps Script, open **Project Settings > Script Properties**, delete `ADMIN_CODE`, then run **Show Coordinator Code** again for a new one. Every signed-in device has to sign in again.
+- **Shifts**: every game with each student's full name, grade and email. **Add Student**, **Move** (to an open shift, or **Swap** with the student on a full one), **Remove**, and **Edit** (date, time, games, spots, status, notes). **Add Shift** adds a new one, such as a tournament game once its time is set.
+- **Email**: one message to everyone on upcoming shifts, everyone who has signed up this season, or one shift's crew. Each student gets their own copy.
+- **Settings**: the same rows as the Settings tab.
+
+Students get an email when you add, move, swap or remove them, cancel their game, or change its date or time. Untick the box in the dialog to skip it for that change. Cancelling a game takes everyone off it either way, so the 3 PM run won't email them later.
+
 ## Running it during the season
 
 - **Change a time or opponent**: edit the Shifts row. Use AM or PM in Start (like `5:30 PM`). A time with no AM/PM from 1 to 7 counts as PM.

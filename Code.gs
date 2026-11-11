@@ -99,6 +99,18 @@ function doPost(e) {
     if (action === 'signup') return json_(signup_(body));
     if (action === 'cancelLoad') return json_(cancelLoad_(body));
     if (action === 'cancel') return json_(cancel_(body));
+    // Coordinator portal (admin/index.html): every admin action needs the coordinator code.
+    if (action.indexOf('admin') === 0) {
+      const gate = adminGate_(body.code);
+      if (gate) return json_({ status: gate });
+      if (action === 'adminLoad') return json_(adminLoad_());
+      if (action === 'adminSaveShift') return json_(adminSaveShift_(body));
+      if (action === 'adminAdd') return json_(adminAdd_(body));
+      if (action === 'adminRemove') return json_(adminRemove_(body));
+      if (action === 'adminMove') return json_(adminMove_(body));
+      if (action === 'adminEmail') return json_(adminEmail_(body));
+      if (action === 'adminSettings') return json_(adminSettings_(body));
+    }
     throw new Error('The page asked for something the script doesn\'t know. Reload the page.');
   } catch (err) {
     return json_({ status: 'error', message: err.message });
@@ -358,7 +370,22 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu('Media Booth')
     .addItem('Send Today\'s Emails Now', 'menuDailyEmails')
     .addItem('Refresh Students Column', 'menuRefresh')
+    .addSeparator()
+    .addItem('Show Coordinator Code', 'showCoordinatorCode')
     .addToUi();
+}
+
+/**
+ * Shows the code for the coordinator portal (admin/index.html), making one the
+ * first time. Run it from the Media Booth menu or the editor. To change the
+ * code, delete ADMIN_CODE under Project Settings > Script Properties and run
+ * this again.
+ */
+function showCoordinatorCode() {
+  const code = adminCode_();
+  console.log('Coordinator code: ' + code);
+  try { SpreadsheetApp.getUi().alert('Coordinator portal code: ' + code); } catch (e) { /* run from the editor */ }
+  return code;
 }
 
 function menuDailyEmails() {
@@ -612,12 +639,12 @@ function cancelLink_(s, u) {
 }
 
 /** One email for everything a student just signed up for. made = [{sh, u}], all the same student. */
-function sendConfirm_(s, made) {
+function sendConfirm_(s, made, lead) {
   const u0 = made[0].u;
   const first = u0.name.split(' ')[0];
   const one = made.length === 1;
-  const parts = ['<p style="margin:0 0 14px">Thanks, ' + esc_(first) + '. You signed up to run the media booth ' +
-    (one ? 'for this shift:' : 'for these ' + made.length + ' shifts:') + '</p>'];
+  const parts = ['<p style="margin:0 0 14px">' + (lead ? esc_(lead) : 'Thanks, ' + esc_(first) + '. You signed up to run the media booth ' +
+    (one ? 'for this shift:' : 'for these ' + made.length + ' shifts:')) + '</p>'];
   made.forEach(function (m, i) {
     parts.push('<div style="margin-top:' + (i ? 14 : 0) + 'px">' + shiftCard_(m.sh, s) + '</div>');
     if (one) {
@@ -721,4 +748,377 @@ function send_(s, to, subject, html) {
 
 function esc_(v) {
   return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/* ---------- Coordinator portal ---------- */
+
+const ADMIN_TRIES = 8;   // wrong codes allowed in 15 minutes (from anyone) before the portal locks
+const REMOVED = 'Removed';   // Sign-Ups status when the coordinator takes a student off
+
+/** The coordinator code, made the first time it's needed. */
+function adminCode_() {
+  const props = PropertiesService.getScriptProperties();
+  let code = props.getProperty('ADMIN_CODE');
+  if (!code) {
+    code = String(100000 + Math.floor(Math.random() * 900000));
+    props.setProperty('ADMIN_CODE', code);
+  }
+  return code;
+}
+
+/** '' for the right code, else 'badcode'. Too many wrong codes give 'locked' for 15 minutes. */
+function adminGate_(code) {
+  const cache = CacheService.getScriptCache();
+  const bad = Number(cache.get('ADMIN_BAD') || 0);
+  if (bad >= ADMIN_TRIES) return 'locked';
+  if (String(code || '').trim() === adminCode_()) return '';
+  cache.put('ADMIN_BAD', String(bad + 1), 900);
+  return bad + 1 >= ADMIN_TRIES ? 'locked' : 'badcode';
+}
+
+/** Everything the portal shows: all shifts with full names and emails, known students, settings. */
+function adminLoad_() {
+  const s = settings_();
+  const shifts = readShifts_(true);
+  const ups = readSignups_();
+  const active = ups.filter(function (u) { return u.status === ACTIVE; });
+  const today = dateKey_(new Date());
+  const list = shifts.map(function (sh) {
+    return {
+      id: sh.id, date: sh.date, opponent: sh.opponent, shift: sh.shift, games: sh.games, start: sh.start,
+      arrive: arriveTime_(sh, s), spots: sh.spots, status: sh.status, notes: sh.notes,
+      started: started_(sh), past: sh.date < today,
+      crew: active.filter(function (u) { return u.shiftId === sh.id; })
+        .map(function (u) { return { id: u.id, name: u.name, grade: u.grade, email: u.email }; }),
+    };
+  });
+  list.sort(shiftOrder_);
+
+  const byEmail = {};
+  ups.forEach(function (u) {
+    if (!u.email) return;
+    const x = byEmail[u.email] || (byEmail[u.email] = { email: u.email, name: u.name, grade: u.grade, active: 0 });
+    x.name = u.name;
+    x.grade = u.grade;
+    if (u.status === ACTIVE) x.active++;
+  });
+  const students = Object.keys(byEmail).map(function (k) { return byEmail[k]; })
+    .sort(function (a, b) { return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1; });
+
+  const tab = sheet_(SETTINGS_NAME);
+  const settings = tab.getLastRow() > 1 ? tab.getRange(2, 1, tab.getLastRow() - 1, 3).getValues()
+    .filter(function (r) { return String(r[0]).trim(); })
+    .map(function (r) { return { setting: String(r[0]).trim(), value: String(r[1]), note: String(r[2]) }; }) : [];
+
+  return {
+    status: 'ok', today: today, shifts: list, students: students, settings: settings,
+    grades: s.grades, testTo: s.testTo, pageLink: s.pageLink, statuses: SHIFT_STATUSES,
+    quota: MailApp.getRemainingDailyQuota(),
+  };
+}
+
+/**
+ * Adds or changes a shift. Body {shift: {id?, date, opponent, shift, games, start, spots, status, notes}, notify}.
+ * Cancelling takes everyone off it (they're emailed when notify is on). A new date or time emails them the update.
+ */
+function adminSaveShift_(body) {
+  const s = settings_();
+  const f = body.shift || {};
+  const date = dateKey_(f.date);
+  if (!date) throw new Error('Pick a date.');
+  const opponent = String(f.opponent || '').trim();
+  if (!opponent) throw new Error('Enter the opponent or event.');
+  const label = String(f.shift || '').trim() || 'All Games';
+  const games = (Array.isArray(f.games) ? f.games : String(f.games || '').split(/[;\n]/))
+    .map(function (g) { return String(g).trim(); }).filter(String);
+  const startIn = String(f.start || '').trim();
+  const startMin = minutes_(startIn);
+  if (startIn && startMin < 0) throw new Error('Write the start time like 5:30 PM.');
+  let spots = parseInt(f.spots, 10);
+  if (isNaN(spots) || spots < 1) spots = 1;
+  spots = Math.min(spots, 10);
+  const status = SHIFT_STATUSES.indexOf(f.status) >= 0 ? f.status : 'Open';
+  const notes = String(f.notes || '').trim();
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  let sh, old = null, crew = [], cancelledNow = false, timeChanged = false;
+  try {
+    const tab = sheet_(SHIFTS_NAME);
+    let row;
+    if (f.id) {
+      old = readShifts_(false).filter(function (x) { return x.id === String(f.id); })[0];
+      if (!old) throw new Error('That shift isn\'t on the Shifts tab anymore. Reload the page.');
+      row = old.row;
+    } else {
+      row = tab.getLastRow() + 1;
+      tab.getRange(row, 6).setNumberFormat('@');
+      tab.getRange(row, 2).setNumberFormat('ddd m/d/yyyy');
+    }
+    tab.getRange(row, 2, 1, 8).setValues([[dateValue_(date), opponent, label, games.join('; '), clock_(startMin), spots, status, notes]]);
+    sh = readShifts_(true).filter(function (x) { return x.row === row; })[0];
+
+    const ups = sheet_(SIGNUPS_NAME);
+    crew = readSignups_().filter(function (u) { return u.status === ACTIVE && u.shiftId === sh.id; });
+    if (old) {
+      cancelledNow = sh.status === 'Cancelled' && old.status !== 'Cancelled';
+      timeChanged = old.date !== sh.date || old.start !== sh.start || old.games.join('|') !== sh.games.join('|');
+      crew.forEach(function (u) {
+        ups.getRange(u.row, 4, 1, 3).setValues([[dateValue_(sh.date), sh.opponent, sh.shift]]);
+        if (old.date !== sh.date) ups.getRange(u.row, SIGNUP_HEADERS.indexOf('Reminder Sent') + 1).setValue('');
+        // A cancelled game takes everyone off it, so the 3 PM run doesn't email them again.
+        if (cancelledNow) ups.getRange(u.row, SIGNUP_HEADERS.indexOf('Status') + 1).setValue('Game Cancelled');
+      });
+    }
+    refreshStudents_(sh.id);
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+
+  let emailed = 0;
+  if (body.notify && crew.length && (cancelledNow || (timeChanged && sh.status === 'Open'))) {
+    crew.forEach(function (u) {
+      try {
+        if (cancelledNow) sendGameCancelled_(s, sh, u); else sendShiftChanged_(s, sh, u);
+        emailed++;
+      } catch (err) {
+        console.error('Email to ' + u.email + ' failed: ' + err.message);
+      }
+    });
+  }
+  return { status: 'ok', id: sh.id, emailed: emailed, offShift: cancelledNow ? crew.length : 0 };
+}
+
+/** Puts a student on a shift for them. Body {shiftId, name, grade, email, notify}. */
+function adminAdd_(body) {
+  const s = settings_();
+  const name = cleanName_(body.name);
+  if (!/\S+\s+\S+/.test(name)) throw new Error('Enter the student\'s first and last name.');
+  const grade = String(body.grade || '').trim();
+  if (!grade) throw new Error('Pick a grade.');
+  const email = normEmail_(body.email);
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new Error('Enter the student\'s email.');
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  let sh, u;
+  try {
+    sh = readShifts_(false).filter(function (x) { return x.id === String(body.shiftId || ''); })[0];
+    if (!sh) throw new Error('That shift isn\'t on the Shifts tab anymore. Reload the page.');
+    if (sh.status === 'Cancelled') throw new Error('That game is cancelled.');
+    const on = readSignups_().filter(function (x) { return x.status === ACTIVE && x.shiftId === sh.id; });
+    if (on.some(function (x) { return x.email === email; })) throw new Error(name + ' is already on this shift.');
+    if (on.length >= sh.spots) throw new Error('This shift is full. Raise its Spots or move someone off first.');
+    u = { id: nextSignupId_(), key: Utilities.getUuid().replace(/-/g, '').slice(0, 20), name: name, grade: grade, email: email };
+    sheet_(SIGNUPS_NAME).appendRow([u.id, new Date(), sh.id, dateValue_(sh.date), sh.opponent, sh.shift, name, grade, email, ACTIVE, '', '', u.key]);
+    refreshStudents_(sh.id);
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+  let emailed = false;
+  if (body.notify) {
+    try {
+      sendConfirm_(s, [{ sh: sh, u: u }], 'Hi ' + name.split(' ')[0] + ', you\'re signed up to run the media booth for this shift:');
+      emailed = true;
+    } catch (err) {
+      console.error('Email to ' + email + ' failed: ' + err.message);
+    }
+  }
+  return { status: 'ok', id: u.id, emailed: emailed };
+}
+
+/** Takes a student off a shift. Body {signupId, notify}. */
+function adminRemove_(body) {
+  const s = settings_();
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  let u, sh;
+  try {
+    u = activeSignup_(body.signupId);
+    sh = readShifts_(false).filter(function (x) { return x.id === u.shiftId; })[0];
+    sheet_(SIGNUPS_NAME).getRange(u.row, SIGNUP_HEADERS.indexOf('Status') + 1, 1, 2).setValues([[REMOVED, new Date()]]);
+    refreshStudents_(u.shiftId);
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+  let emailed = false;
+  if (body.notify && sh) {
+    try { sendRemoved_(s, sh, u); emailed = true; } catch (err) { console.error('Email to ' + u.email + ' failed: ' + err.message); }
+  }
+  return { status: 'ok', emailed: emailed };
+}
+
+/**
+ * Moves a student to another shift. Body {signupId, toShiftId, swapWith?, notify}.
+ * When the new shift is full, swapWith (a sign-up on it) trades places with them.
+ */
+function adminMove_(body) {
+  const s = settings_();
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  let u, other = null, from, to;
+  try {
+    u = activeSignup_(body.signupId);
+    const shifts = readShifts_(false);
+    from = shifts.filter(function (x) { return x.id === u.shiftId; })[0];
+    to = shifts.filter(function (x) { return x.id === String(body.toShiftId || ''); })[0];
+    if (!from || !to) throw new Error('That shift isn\'t on the Shifts tab anymore. Reload the page.');
+    if (from.id === to.id) throw new Error('Pick a different shift.');
+    if (to.status === 'Cancelled') throw new Error('That game is cancelled.');
+    const active = readSignups_().filter(function (x) { return x.status === ACTIVE; });
+    const onTo = active.filter(function (x) { return x.shiftId === to.id; });
+    if (onTo.some(function (x) { return x.email === u.email; })) throw new Error(u.name + ' is already on that shift.');
+    if (body.swapWith) {
+      other = onTo.filter(function (x) { return x.id === String(body.swapWith); })[0];
+      if (!other) throw new Error('The student to swap with isn\'t on that shift anymore. Reload the page.');
+      if (active.some(function (x) { return x.shiftId === from.id && x.email === other.email; })) {
+        throw new Error(other.name + ' is already on ' + u.name + '\'s shift.');
+      }
+    } else if (onTo.length >= to.spots) {
+      throw new Error('That shift is full. Swap with the student on it instead.');
+    }
+    moveSignup_(u, to);
+    if (other) moveSignup_(other, from);
+    refreshStudents_([from.id, to.id]);
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+  let emailed = 0;
+  if (body.notify) {
+    [[u, to], [other, from]].forEach(function (p) {
+      if (!p[0]) return;
+      try { sendMoved_(s, p[1], p[0]); emailed++; } catch (err) { console.error('Email to ' + p[0].email + ' failed: ' + err.message); }
+    });
+  }
+  return { status: 'ok', swapped: !!other, emailed: emailed };
+}
+
+/**
+ * Emails students. Body {to: 'season' | 'upcoming' | 'shift', shiftId, subject, message, includeLink}.
+ * season = everyone who has ever signed up; upcoming = everyone on an open shift from today on.
+ */
+function adminEmail_(body) {
+  const s = settings_();
+  const subject = String(body.subject || '').trim();
+  const message = String(body.message || '').trim();
+  if (!subject) throw new Error('Add a subject.');
+  if (!message) throw new Error('Write a message.');
+  const people = adminRecipients_(body.to, body.shiftId);
+  if (!people.length) throw new Error('No students to send to.');
+  if (!s.testTo && people.length > MailApp.getRemainingDailyQuota()) {
+    throw new Error('Gmail only lets this account send ' + MailApp.getRemainingDailyQuota() + ' more emails today.');
+  }
+  const parts = message.split(/\n\s*\n/).map(function (p) {
+    return '<p style="margin:0 0 12px">' + esc_(p.trim()).replace(/\n/g, '<br>') + '</p>';
+  });
+  if (body.includeLink && s.pageLink) parts.push(button_('Open the Sign-Up Page', s.pageLink, true));
+  const html = emailHtml_(subject, parts, s);
+  if (s.testTo) {
+    // One copy in test mode instead of one per student.
+    send_(s, people.map(function (p) { return p.email; }).join(', '), subject, html);
+  } else {
+    people.forEach(function (p) { send_(s, p.email, subject, html); });
+  }
+  return { status: 'ok', sent: people.length, test: !!s.testTo };
+}
+
+function adminRecipients_(to, shiftId) {
+  const today = dateKey_(new Date());
+  const shifts = {};
+  readShifts_(false).forEach(function (sh) { shifts[sh.id] = sh; });
+  const seen = {};
+  const out = [];
+  readSignups_().forEach(function (u) {
+    if (!u.email || seen[u.email]) return;
+    const sh = shifts[u.shiftId];
+    let ok;
+    if (to === 'season') ok = true;
+    else if (to === 'upcoming') ok = u.status === ACTIVE && sh && sh.date >= today && sh.status !== 'Cancelled';
+    else if (to === 'shift') ok = u.status === ACTIVE && u.shiftId === String(shiftId || '');
+    else throw new Error('Pick who the email goes to.');
+    if (ok) { seen[u.email] = true; out.push({ email: u.email, name: u.name }); }
+  });
+  return out;
+}
+
+/** Saves the Settings tab. Body {values: {setting: value}}. */
+function adminSettings_(body) {
+  const v = body.values || {};
+  const check = function (k, test, msg) { if (k in v && !test(String(v[k]).trim())) throw new Error(msg); };
+  const emailOk = function (x) { return !x || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x); };
+  check('Coordinator email', emailOk, 'Coordinator email doesn\'t look like an email address.');
+  check('Test mode: send all email to', emailOk, 'The test mode address doesn\'t look like an email address.');
+  check('Arrive minutes early', function (x) { return /^\d{1,3}$/.test(x); }, 'Arrive minutes early should be a number, like 30.');
+  check('Grades', function (x) { return x.split(',').some(function (g) { return g.trim(); }); }, 'List at least one grade.');
+  check('Late cancel alert (hours)', function (x) { return !x || /^\d+(\.\d+)?$/.test(x); }, 'Late cancel alert should be a number of hours, or blank.');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    const tab = sheet_(SETTINGS_NAME);
+    const n = tab.getLastRow() - 1;
+    const rows = n > 0 ? tab.getRange(2, 1, n, 1).getValues() : [];
+    rows.forEach(function (r, i) {
+      const k = String(r[0]).trim();
+      if (k in v) tab.getRange(i + 2, 2).setValue(String(v[k]).trim());
+    });
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+  return { status: 'ok' };
+}
+
+function activeSignup_(id) {
+  const u = readSignups_().filter(function (x) { return x.id === String(id || ''); })[0];
+  if (!u || u.status !== ACTIVE) throw new Error('That student isn\'t on this shift anymore. Reload the page.');
+  return u;
+}
+
+function nextSignupId_() {
+  const props = PropertiesService.getScriptProperties();
+  const n = Number(props.getProperty('NEXT_ID') || 1001);
+  props.setProperty('NEXT_ID', String(n + 1));
+  return 'S-' + n;
+}
+
+/** Points a sign-up at another shift; its cancel link keeps working, and the reminder resets. */
+function moveSignup_(u, sh) {
+  const tab = sheet_(SIGNUPS_NAME);
+  tab.getRange(u.row, 3, 1, 4).setValues([[sh.id, dateValue_(sh.date), sh.opponent, sh.shift]]);
+  tab.getRange(u.row, SIGNUP_HEADERS.indexOf('Reminder Sent') + 1).setValue('');
+}
+
+function sendMoved_(s, sh, u) {
+  const html = emailHtml_('Your Shift Changed', [
+    '<p style="margin:0 0 14px">Hi ' + esc_(u.name.split(' ')[0]) + ', your media booth shift was moved. You\'re now on:</p>',
+    shiftCard_(sh, s),
+    button_('Add to Google Calendar', calendarLink_(sh, s), true),
+    '<p style="margin:18px 0 0;font-size:14px;color:#5B6577">Can\'t make this one? ' +
+      '<a href="' + cancelLink_(s, u) + '" style="color:#96282D">Cancel this shift</a>.</p>',
+  ], s);
+  send_(s, u.email, 'Media Booth: Moved to ' + shortDate_(sh.date) + ' vs ' + sh.opponent +
+    (sh.shift === 'All Games' ? '' : ' (' + sh.shift + ')'), html);
+}
+
+function sendRemoved_(s, sh, u) {
+  const html = emailHtml_('You\'re Off a Shift', [
+    '<p style="margin:0 0 14px">Hi ' + esc_(u.name.split(' ')[0]) + ', you\'ve been taken off this media booth shift:</p>',
+    shiftCard_(sh, s),
+  ], s);
+  send_(s, u.email, 'Media Booth: Off ' + shortDate_(sh.date) + ' vs ' + sh.opponent, html);
+}
+
+function sendShiftChanged_(s, sh, u) {
+  const html = emailHtml_('Your Shift Changed', [
+    '<p style="margin:0 0 14px">Hi ' + esc_(u.name.split(' ')[0]) + ', the date or time of your media booth shift changed. Here it is now:</p>',
+    shiftCard_(sh, s),
+    button_('Add to Google Calendar', calendarLink_(sh, s), true),
+    '<p style="margin:18px 0 0;font-size:14px;color:#5B6577">Can\'t make it now? ' +
+      '<a href="' + cancelLink_(s, u) + '" style="color:#96282D">Cancel this shift</a>.</p>',
+  ], s);
+  send_(s, u.email, 'Media Booth: Updated ' + shortDate_(sh.date) + ' vs ' + sh.opponent, html);
 }
