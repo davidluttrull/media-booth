@@ -423,6 +423,7 @@
 
   function signOut(msg) {
     code = '';
+    if (/code=/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search);
     store.set('mb-admin-code', '');
     data = null;
     closeDialogs();
@@ -848,6 +849,13 @@
   document.querySelectorAll('.overlay').forEach((o) => o.addEventListener('mousedown', (e) => { if (e.target === o) closeDialogs(); }));
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDialogs(); });
   document.addEventListener('visibilitychange', () => { if (!document.hidden && data && document.querySelectorAll('.overlay:not([hidden])').length === 0) refresh(); });
+
+  // A bookmark link can carry the code: admin/#code=123456. It stays in the address so the page can be bookmarked after opening.
+  const linkCode = location.hash.match(/(?:^#|&)code=([^&]+)/);
+  if (linkCode) {
+    code = decodeURIComponent(linkCode[1]).replace(/\s+/g, '');
+    store.set('mb-admin-code', code);
+  }
 
   if (code) {
     $('board').innerHTML = '<div class="loading">Loading&hellip;</div>';
